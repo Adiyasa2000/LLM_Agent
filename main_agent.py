@@ -1,24 +1,12 @@
 import os
-import sys
 from dotenv import load_dotenv
-
-# --- Tilføj rodmappen til sys.path for at finde 'tools.py' ---
-# Dette er nødvendigt, hvis du kører main_agent.py direkte fra agent_brain mappen.
-# Hvis du kører fra rodmappen (basin_agent/), er det teknisk set ikke nødvendigt,
-# men det skader ikke at have med for robusthed.
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(current_dir, '..'))
-if project_root not in sys.path:
-    sys.path.append(project_root)
-# ------------------------------------------------------------
-
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import create_openai_tools_agent, AgentExecutor
 from tools import available_tools
 
 # --- Konfiguration ---
-load_dotenv(dotenv_path=os.path.join(project_root, '.env')) # Indlæs .env fra rodmappen
+load_dotenv(dotenv_path='.env') # Indlæs .env fra rodmappen
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 LLM_MODEL           = "gpt-4o" 
 
@@ -29,24 +17,15 @@ llm = ChatOpenAI(model=LLM_MODEL, temperature=1, openai_api_key=OPENAI_API_KEY)
 # --- Definer Agent Prompt ---
 # Dette er den KRITISKE instruktion til agenten
 SYSTEM_PROMPT = """
-Du er en specialiseret assistent til analyse af danske regnvandsbassiner. Dit mål er at besvare brugerens spørgsmål ved hjælp af de tilgængelige værktøjer.
+Du er en specialiseret assistent til analyse af danske regnvandsbassiner. Dit mål er at besvare brugerens spørgsmål ved hjælp af de tilgængelige værktøjer. Svar altid på dansk.
 
 **VIGTIG ARBEJDSGANG:**
 
-1.  **ALTID FØRSTE SKRIDT:** Når brugeren spørger om et specifikt bassin eller bassiner i en kommune, **skal du ALTID starte med at bruge `Basin_Match` værktøjet**. Brug brugerens input (kommune og/eller ID) til `kommune_query` og/eller `basin_id_query`.
-
-2.  **HÅNDTER `Basin_Match` RESULTAT:**
-    *   Hvis `status` er `'found_exact'`: Perfekt! Brug det returnerede `basin_identifier` og `kommune` til eventuelle efterfølgende analyseværktøjs-kald.
-    *   Hvis `status` er `'found_multiple'`: **GÆT IKKE!** Præsenter beskeden fra `message_to_user` for brugeren og bed dem om at **bekræfte det præcise `basin_identifier`**, de ønsker at analysere. Brug derefter det bekræftede ID/kommune (evt. med et nyt `Basin_Match` kald for at være sikker, hvis brugeren kun gav ID'et).
-    *   Hvis `status` er `'not_found'`, `'no_query'` eller `'error'`: Informer brugeren klart om resultatet og **stop** den aktuelle analyse-sekvens.
-
-3.  **BRUG ANDRE VÆRKTØJER:** Kald KUN de andre analyseværktøjer (`Get_Basin_Attributes`, `Check_Natura2000_Overlap`, `Check_Protected_Nature`, `Check_Species_AnnexIV_Proximity`, `Check_VP3_Streams_Proximity`) **EFTER** du har fået et **eksakt** `basin_identifier` og `kommune` bekræftet via `Basin_Match`. Giv disse præcise værdier videre til værktøjet.
-
-4.  **KORTGENERERING:** Hvis brugeren beder om et kort (typisk efter en succesfuld analyse), brug da `Generate_Basin_Map` værktøjet med det bekræftede `basin_identifier`, `kommune`, og en passende `map_scale` (brug 1000 som default). Præsenter stien til det genererede kort for brugeren.
-
-5.  **SVAR KUN BASERET PÅ VÆRKTØJER:** Baser dine svar **udelukkende** på informationen returneret fra værktøjerne. Hvis et værktøj returnerer en fejl, så rapporter fejlen til brugeren. Vær klar og præcis.
-
-6.  **SVAR MÅDE:** Du skal omsætte json resultater til sproglige beskrivelser
+1.  **ALTID FØRSTE SKRIDT:** Brug ALTID `Basin_Match` værktøjet FØRST for at validere kommune/bassin ID.
+2.  **HÅNDTER `Basin_Match` RESULTAT:** Spørg brugeren hvis flere matches findes. Stop hvis intet findes.
+3.  **BRUG ANDRE VÆRKTØJER:** Brug KUN andre analyseværktøjer (`Get_Basin_Attributes`, etc.) EFTER et eksakt match er fundet, og KUN hvis relevant for spørgsmålet.
+4.  **KORT/PDF GENERERING:** Brug KUN `Generate_Basin_Map` / `Generate_Simple_Report` hvis brugeren specifikt beder om det EFTER en analyse. Værktøjet returnerer enten præcis strengen "Fil gemt her: [relativ_sti]" eller en fejlbesked. **Gentag KUN værktøjets output direkte uden ekstra tekst eller formatering (ingen links, ingen ekstra sætninger).**
+5.  **SVAR BASERET PÅ VÆRKTØJER:** Baser svar UDELUKKENDE på værktøjsoutput. Omsæt JSON til letforståelig tekst. **Når et værktøj returnerer en filsti via "Fil gemt her: ...", gentag den streng og KUN den streng.**
 """
 
 # Opret prompt template

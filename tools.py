@@ -2,6 +2,7 @@ import os
 import json
 from typing import Type, Dict, Any, Optional, List
 from pydantic import BaseModel, Field
+from pathlib import Path 
 
 # --- Importer _main funktionerne fra agent_tools ---
 try:
@@ -15,6 +16,8 @@ try:
     from agent_tools.generate_map import generate_map as generate_map_logic_main
     # Importer sanitize funktionen specifikt, da den bruges i GenerateMapTool's _run
     from agent_tools.generate_map import sanitize
+    from agent_tools.generate_pdf import create_simple_report_main
+
 except ImportError as e:
     print(f"Import FEJL: Kunne ikke importere fra 'agent_tools'. Sikr dig at tools.py køres fra 'basin_agent' mappen, eller at PYTHONPATH er sat.")
     print(f"Fejl detalje: {e}")
@@ -27,6 +30,10 @@ except ImportError as e:
     def analyze_vp3_streams_main(*args, **kwargs): return {"kategori": "Fejl", "data": {"fejl": "Importfejl i tools.py"}}
     def generate_map_logic_main(*args, **kwargs): return "Importfejl i tools.py"
     def sanitize(text): return "sanitized_import_error"
+    # *** NY DUMMY FUNKTION TILFØJET HER ***
+    def create_simple_report_main(*args, **kwargs): print("Importfejl: create_simple_report_main ikke fundet."); return None
+
+# ... (resten af imports som BaseTool, BaseModel etc. forbliver uændret) ...
 
 
 # --- LangChain BaseTool Import ---
@@ -298,6 +305,57 @@ class GenerateBasinMapTool(BaseTool):
             return f"Fejl under kortgenerering: {type(e).__name__}"
 
 
+# --- 8. Generate Simple PDF Report (MED PATHLIB IMPORT OG EXISTS TJEK) ---
+class GenerateSimpleReportInput(BaseModel):
+    basin_identifier: str = Field(..., description="Det PRÆCISE basin identifier returneret af `Basin_Match` værktøjet.")
+    kommune: str = Field(..., description="Det PRÆCISE kommune navn returneret af `Basin_Match` værktøjet.")
+    map_scale: Optional[int] = Field(3000, description="Valgfrit målestoksforhold for kortet, der inkluderes i PDF'en. Default er 3000.")
+
+class GenerateSimpleReportTool(BaseTool):
+    name: str = "Generate_Simple_Report"
+    description: str = (
+        "Genererer en simpel PDF-rapport for et specifikt bassin (identificeret via `Basin_Match`). "
+        # ... (resten af beskrivelsen) ...
+        "Returnerer strengen 'Fil gemt her: [relativ_sti]' ved succes, ellers en fejlbesked."
+    )
+    args_schema: Type[BaseModel] = GenerateSimpleReportInput
+
+    def _run(self, basin_identifier: str, kommune: str, map_scale: int = 3000) -> str:
+        print(f"--- Running GenerateSimpleReportTool (Input: id='{basin_identifier}', kommune='{kommune}', scale={map_scale}) ---")
+        try:
+            relative_pdf_path = create_simple_report_main(
+                basin_identifier=basin_identifier,
+                kommune=kommune,
+                map_scale=map_scale
+            )
+
+            if relative_pdf_path:
+                try:
+                    # Antager tools.py ligger i projektets rodmappe (basin_agent)
+                    project_root = Path(__file__).parent
+                    expected_abs_path = project_root / relative_pdf_path
+
+                    # VENT på og VERIFICER at filen eksisterer
+                    if expected_abs_path.exists() and expected_abs_path.is_file():
+                        print(f"--- GenerateSimpleReportTool VERIFIED Path: {relative_pdf_path} ---")
+                        return f"Fil gemt her: {relative_pdf_path}" # Returner succes-streng
+                    else:
+                        print(f"--- GenerateSimpleReportTool ERROR: Fil findes IKKE på forventet sti efter generering: {expected_abs_path} ---")
+                        return f"Fejl: PDF blev rapporteret genereret, men kunne ikke findes på serveren ({relative_pdf_path})."
+
+                except Exception as path_e:
+                     print(f"--- GenerateSimpleReportTool ERROR: Kunne ikke verificere filsti: {path_e} ---")
+                     return f"Fejl under verificering af filsti for {relative_pdf_path}: {path_e}"
+            else:
+                print("--- GenerateSimpleReportTool FAILED: create_simple_report_main returnerede None ---")
+                return "Fejl: Kunne desværre ikke generere PDF rapporten (intern fejl)."
+
+        except Exception as e:
+            print(f"ERROR in GenerateSimpleReportTool _run: {e}")
+            import traceback
+            traceback.print_exc() # Print fuld traceback for bedre fejlfinding
+            return f"Uventet fejl under PDF rapportgenerering: {type(e).__name__}"
+        
 # === Liste over alle tools til agenten ===
 # Når alle tools er defineret, samler man dem typisk i en liste
 available_tools = [
@@ -308,8 +366,8 @@ available_tools = [
     CheckSpeciesAnnexIVProximityTool(),
     CheckVP3StreamsProximityTool(),
     GenerateBasinMapTool(),
+    GenerateSimpleReportTool(), # <-- TILFØJET HER
 ]
-
 
 # === Simpel test af tools (hvis filen køres direkte) ===
 if __name__ == '__main__':
@@ -364,6 +422,12 @@ if __name__ == '__main__':
         map_res = map_tool.run({"basin_identifier": exact_id, "kommune": exact_kom, "map_scale": 3000})
         print("--- Map Resultat ---")
         print(map_res) # map_res er bare en streng med stien
+
+        print(f"\n>>> 8. Kører Generate_Simple_Report (scale 3000)...") # Ny test
+        report_tool = GenerateSimpleReportTool()
+        report_res = report_tool.run({"basin_identifier": exact_id, "kommune": exact_kom, "map_scale": 3000})
+        print("--- Simple Report Resultat ---")
+        print(report_res) # report_res er en streng med stien eller fejlbesked
 
     elif match_res.get("status") == "found_multiple":
          print("\n>>> Flere matches fundet af Basin_Match. Agenten ville skulle spørge brugeren.")
